@@ -6,38 +6,34 @@
   <a href="https://github.com/wangcuitao/GongLuePlayer/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/wangcuitao/GongLuePlayer?style=flat-square&color=ffcc00"></a>
   <a href="https://github.com/wangcuitao/GongLuePlayer/network/members"><img alt="GitHub forks" src="https://img.shields.io/github/forks/wangcuitao/GongLuePlayer?style=flat-square"></a>
   <a href="https://github.com/wangcuitao/GongLuePlayer/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/wangcuitao/GongLuePlayer?style=flat-square"></a>
-  <a href="https://img.shields.io/badge/Python-3.10%20%7C%203.11-3776ab?style=flat-square&logo=python"><img alt="Python" src="https://img.shields.io/badge/Python-3.10%20%7C%203.11-3776ab?style=flat-square&logo=python"></a>
-  <a href="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078d4?style=flat-square&logo=windows"><img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078d4?style=flat-square&logo=windows"></a>
+  <a href="https://www.python.org/downloads/release/python-3110/"><img alt="Python" src="https://img.shields.io/badge/Python-3.10%20%7C%203.11-3776ab?style=flat-square&logo=python"></a>
+  <a href="https://www.microsoft.com/windows"><img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%2010%2F11-0078d4?style=flat-square&logo=windows"></a>
 </p>
 
 ---
 
-## 📖 项目简介
+## 项目简介
 
 在玩《原神》《艾尔登法环》这类需要对照攻略的游戏时，来回切换窗口看攻略视频既打断节奏又低效。**GongLuePlayer** 把攻略视频变成一个「悬浮在游戏上、鼠标可穿透、全局快捷键可控」的极简窗口，让你一边打游戏一边跟跑攻略。
 
 核心亮点：
 
-- 🪶 **极致轻量**：打包后 EXE 仅约 25–35MB，运行内存 < 50MB，全程不使用任何浏览器内核。
-- 🖱️ **鼠标穿透**：默认鼠标穿透窗口直接操作下层游戏，按住 `Alt` 才可交互（拖动、点击）。
-- 📋 **一键播放**：复制 B 站链接后按 `Ctrl + V` 即可解析播放，自动识别合集并支持切换。
-- ⌨️ **全局快捷键**：即使在游戏窗口内，也能用 `` ` ``、方向键等控制播放。
+- 轻量：打包后 EXE 仅约 67MB，全程不使用任何浏览器内核。
+- 鼠标穿透：默认鼠标穿透窗口直接操作下层游戏，按住 `Alt` 才可交互（拖动、点击）。
+- 一键播放：复制 B 站链接后按 `Ctrl + V` 即可解析播放，自动识别合集并支持切换。
+- 全局快捷键：即使在游戏窗口内，也能控制播放。所有快捷键支持自定义。
 
 ---
 
-## 🖼️ 效果展示
+## 效果展示
 
-> 以下为预留占位图，请将截图 / GIF 放入 `assets/` 目录后替换链接。
+> 暂留空。
 
-| 悬浮播放效果 | 快捷键提示 |
-| :---: | :---: |
-| ![悬浮播放](assets/screenshot-playing.png) | ![快捷键说明](assets/screenshot-hotkeys.png) |
 
-![动态演示](assets/demo.gif)
 
 ---
 
-## ✨ 核心特性
+## 核心特性
 
 - **鼠标穿透 + Alt 交互**
   默认状态鼠标事件直接穿透窗口落到下层游戏；按住 `左Alt` 临时解除穿透，此时可拖动窗口、点击按钮、调节透明度，松开即恢复穿透。
@@ -62,26 +58,7 @@
 
 ---
 
-## ⌨️ 快捷键列表
-
-| 快捷键 | 功能 |
-| :--- | :--- |
-| `` ` ``（数字 1 左边） | 暂停 / 播放 |
-| `←` / `→` | 快退 / 快进 5 秒 |
-| `↑` / `↓` | 音量 + / − |
-| `]` | 下一集 |
-| `、`（P 键右边第三个） | 打开 / 关闭选集菜单 |
-| `Ctrl + V` | 粘贴 B 站链接播放 |
-| `Ctrl + Alt + Q` | 退出程序 |
-| `Alt`（按住） | 解除鼠标穿透 + 显示悬浮控制 |
-| `Alt + 滚轮` | 调节透明度 |
-| `Alt + 鼠标左键` | 拖动窗口 |
-
-> 所有快捷键均可在「设置」面板中自定义。
-
----
-
-## 🚀 安装与使用
+## 安装与使用
 
 ### 普通用户（推荐）
 
@@ -122,7 +99,7 @@ python main.py
 
 ---
 
-## ❓ FAQ
+## FAQ
 
 **Q：为什么需要管理员权限？**
 
@@ -157,11 +134,11 @@ pyinstaller --noconfirm --clean --onefile --windowed --name GongLuePlayer \
 
 ---
 
-## 📄 开源协议
+## 开源协议
 
 本项目基于 [MIT License](LICENSE) 开源，欢迎 Star、Fork、提交 Issue 与 PR。
 
-## 🙏 致谢
+## 致谢
 
 本项目站在巨人肩膀上，感谢以下开源项目：
 
@@ -173,6 +150,6 @@ pyinstaller --noconfirm --clean --onefile --windowed --name GongLuePlayer \
 
 ---
 
-## ⚠️ 免责声明
+## 免责声明
 
 > **本程序仅供个人学习与游戏辅助使用，严禁用于任何商业用途。程序不提供、不存储任何视频内容，所有内容均来自 Bilibili 官方 API。请尊重视频原作者的版权，合理使用。**
