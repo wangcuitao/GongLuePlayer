@@ -27,11 +27,7 @@
 
 ## 🖼️ 效果展示
 
-> 以下为预留占位图，请将截图 / GIF 放入 `assets/` 目录后替换链接。
-
-| 悬浮播放效果 | 快捷键提示 |
-| :---: | :---: |
-| ![悬浮播放](assets/screenshot-playing.png) | ![快捷键说明](assets/screenshot-hotkeys.png) |
+![悬浮播放效果](assets/screenshot.png)
 
 ![动态演示](assets/demo.gif)
 
