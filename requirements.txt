@@ -1,0 +1,8 @@
+# 攻略跟跑视频播放器 依赖清单
+# 安装：pip install -r requirements.txt
+# 说明：yt-dlp 需保持最新（B 站解析器更新频繁），建议定期 pip install -U yt-dlp
+
+yt-dlp
+python-mpv>=1.0.5
+pywin32>=306
+keyboard>=0.13.5

@@ -1,0 +1,44 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# 分发 / 打包
+build/
+dist/
+*.egg-info/
+*.spec
+.eggs/
+
+# --- 运行时生成的文件 ---
+# 配置文件与登录态 Cookie（含隐私，勿提交）
+config.json
+cookies.txt
+
+# 日志
+*.log
+
+# --- 平台相关大文件 ---
+# libmpv-2.dll 体积较大且为平台相关二进制，请从官方源下载，勿提交仓库
+libmpv-2.dll
+*.dll
+
+# --- IDE / 编辑器 ---
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# --- 测试 / 缓存 ---
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
