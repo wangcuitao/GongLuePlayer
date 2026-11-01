@@ -8,9 +8,10 @@
        并自动识别合集（多 P / 播放列表）。
 """
 import os
+import re
 import sys
-import threading
-import time
+import tempfile
+import urllib.request
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +48,65 @@ except Exception as exc:      # 可能是 libmpv-2.dll 未放置导致
 
 import yt_dlp
 
+# 本进程创建的所有音轨临时文件（用于退出时统一兜底清理）
+_TEMP_AUDIO_FILES = []
+
+
+def download_audio_to_temp(audio_url, headers):
+    """把 B 站 DASH 音频流下载到本地临时文件，返回路径；失败返回 None。
+
+    用本地文件做 audio-add 可彻底规避远程流在 mpv 里的挂载问题
+    （防盗链头、URL 百分号编码、CDN 时效等不确定因素）。
+    """
+    try:
+        referer = headers.get("Referer") or "https://www.bilibili.com"
+        user_agent = headers.get("User-Agent") or "Mozilla/5.0"
+        req = urllib.request.Request(audio_url, headers={
+            "Referer": referer,
+            "User-Agent": user_agent,
+        })
+        fd, path = tempfile.mkstemp(suffix=".m4s", prefix="gonglue_audio_")
+        os.close(fd)
+        with urllib.request.urlopen(req, timeout=30) as resp, open(path, "wb") as f:
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                f.write(chunk)
+        _TEMP_AUDIO_FILES.append(path)
+        return path
+    except Exception as exc:
+        print(f"[player] 下载音轨失败：{exc}")
+        return None
+
+
+def prepare_entry_audio(entry):
+    """在后台线程调用：若条目含分离的音频流，则下载到本地临时文件。
+
+    结果写入 entry["_audio_local_path"]。play_entry 会优先用本地路径挂音轨；
+    下载失败则为 None，play_entry 会回退到远程 URL（audio-add）。
+    """
+    try:
+        _video_url, audio_url, headers = Player._extract_streams(entry)
+        if not audio_url:
+            print("[player] 未分离出独立音轨（可能已是合并流，无需挂载）")
+            entry["_audio_local_path"] = None
+            return
+        print(f"[player] 分离出音轨 URL：{audio_url[:70]}...")
+        # 已是本地文件则直接沿用
+        if not re.match(r"https?://", audio_url):
+            entry["_audio_local_path"] = audio_url
+            return
+        path = download_audio_to_temp(audio_url, headers)
+        entry["_audio_local_path"] = path
+        if path:
+            print(f"[player] 音轨已下载到本地：{path}")
+        else:
+            print("[player] 音轨下载失败，将回退到远程 URL")
+    except Exception as exc:
+        print(f"[player] 预处理音轨失败：{exc}")
+        entry["_audio_local_path"] = None
+
 
 class Player:
     """MPV 播放器封装。
@@ -69,6 +129,10 @@ class Player:
             )
         self.on_event = on_event
         self._hwnd = hwnd
+        self._pending_audio = None   # 待挂载的外部音轨 URL/本地路径（B 站 DASH 分离流）
+        self._audio_attached = False # 当前条目音轨是否已挂载完成
+        self._audio_tmp_path = None  # 最近一次下载的本地音轨临时文件路径
+        self._audio_garbage = []     # 待清理的旧音轨临时文件（延迟删除）
         try:
             self._mpv = mpv.MPV(
                 wid=str(hwnd),                 # 渲染到指定窗口句柄
@@ -94,34 +158,19 @@ class Player:
                 correct_downscaling="yes",
                 linear_downscaling="yes",
                 sigmoid_upscaling="yes",       # 提升低分辨率源的观感
+                volume_max=150.0,              # 音量上限拉到 150，与音量面板一致
             )
         except Exception as exc:
             raise RuntimeError(f"MPV 初始化失败：{exc}")
 
-        self._recent_logs = []
-        self._last_audio_url = None
         try:
             self._mpv.register_event_callback(self._on_mpv_event)
         except Exception as exc:
             print(f"[player] 注册事件回调失败：{exc}")
-        try:
-            self._mpv.log_handler = self._on_mpv_log
-        except Exception as exc:
-            print(f"[player] 设置日志回调失败：{exc}")
 
     # ------------------------------------------------------------------
-    # 事件回调 / 日志
+    # 事件回调
     # ------------------------------------------------------------------
-    def _on_mpv_log(self, loglevel, namespace, message):
-        """收集 mpv 的 warn/error 日志，用于诊断。"""
-        try:
-            if loglevel in ("fatal", "error", "warn"):
-                self._recent_logs.append(f"[{loglevel}] {namespace}: {message}")
-                if len(self._recent_logs) > 30:
-                    self._recent_logs.pop(0)
-        except Exception:
-            pass
-
     def _on_mpv_event(self, event):
         """处理 mpv 底层事件，转发为简化的事件名。"""
         try:
@@ -130,6 +179,43 @@ class Player:
                     self.on_event("end_file")
         except Exception:
             pass
+
+    def attach_pending_audio(self):
+        """尝试把待挂载的外部音轨用 audio-add 加入并选中（主线程调用）。
+
+        返回 True 表示无需再重试（已挂载 / 无待挂载），False 表示本次失败、
+        需稍后重试（保留 _pending_audio）。audio-file 是「仅加载时读取」的选项，
+        无法在运行时用属性设置；audio-add 是官方推荐的运行时挂载命令。
+        """
+        if getattr(self, "_audio_attached", False):
+            return True
+        audio_url = getattr(self, "_pending_audio", None)
+        if not audio_url:
+            return True
+        try:
+            self._mpv.command("audio-add", audio_url, "select")
+        except Exception as exc:
+            print(f"[player] 挂载音轨失败：{exc}")
+            return False
+        # 验证是否真的出现了音轨（避免命令「成功」但实际没加载的情况）
+        try:
+            tracks = self._mpv.track_list or []
+            aids = [t for t in tracks if t.get("type") == "audio"]
+            info = [{"id": t.get("id"), "title": t.get("title"),
+                     "selected": t.get("selected"), "external": t.get("external")}
+                    for t in aids]
+            print(f"[player] audio-add 后音轨列表：{info}")
+            if aids:
+                self._pending_audio = None
+                self._audio_attached = True
+                print("[player] 音轨挂载成功")
+                return True
+            # 还没有音轨 → 文件可能尚未加载完成，保留待重试
+            print("[player] 音轨尚未出现在列表，稍后重试")
+            return False
+        except Exception as exc:
+            print(f"[player] 读取音轨列表失败：{exc}")
+            return False
 
     def bind_wheel(self, on_wheel_up, on_wheel_down):
         """把鼠标滚轮绑定为 mpv 按键回调（用于视频区上的滚轮调节，无需全局钩子）。"""
@@ -152,73 +238,52 @@ class Player:
         if not video_url:
             raise RuntimeError("未解析到可播放的视频流地址")
 
-        # 防盗链：用 http-header-fields 确保 Referer / User-Agent 对视频与音频流都生效
+        # 优先用已下载的本地音轨（更可靠），否则回退到远程 URL
+        local_audio = entry.get("_audio_local_path")
+        if local_audio:
+            audio_url = local_audio
+        # 上一次的本地音轨临时文件不再需要：先记入待清理队列（延迟到切换完成、
+        # mpv 释放句柄后再删），避免 Windows 上「文件被占用」导致删不掉而堆积
+        prev = getattr(self, "_audio_tmp_path", None)
+        if prev and prev != audio_url:
+            garbage = getattr(self, "_audio_garbage", [])
+            garbage.append(prev)
+            self._audio_garbage = garbage
+            self._audio_tmp_path = None
+        if local_audio:
+            self._audio_tmp_path = local_audio
+
+        # 防盗链：B 站流地址必须携带 Referer / User-Agent
         referer = headers.get("Referer") or "https://www.bilibili.com"
         user_agent = headers.get("User-Agent") or ""
-        fields = [f"Referer: {referer}"]
-        if user_agent:
-            fields.append(f"User-Agent: {user_agent}")
         try:
-            self._mpv["http-header-fields"] = ",".join(fields)
             self._mpv["referrer"] = referer
             if user_agent:
                 self._mpv["user-agent"] = user_agent
+            self._mpv["http-header-fields"] = ",".join(
+                [f"Referer: {referer}"] +
+                ([f"User-Agent: {user_agent}"] if user_agent else []))
         except Exception as exc:
             print(f"[player] 设置请求头失败：{exc}")
 
-        self._last_audio_url = audio_url
-        self._recent_logs = []
+        # DASH 分离流：先记下外部音轨 URL，随后由主线程轮询调用 attach_pending_audio()
+        # 用 audio-add 挂载。audio-file 是「仅加载时读取」的选项，无法通过 options/
+        # 属性在运行时设置（会报 -8 property does not exist）。
+        self._pending_audio = audio_url or None
+        self._audio_attached = False
+        print(f"[player] 视频流：{str(video_url)[:70]}...")
+        print(f"[player] 音频流：{('本地 ' if local_audio else '')}{(audio_url or '无')[:70]}...")
 
-        # DASH 分离流：先播放视频，等装载完成后用 audio-add 添加外部音轨。
-        # 切集时 play 是异步的，立即 audio-add 会因视频未就绪而报 -12。
         try:
             self._mpv.play(video_url)
         except Exception as exc:
             raise RuntimeError(f"播放失败：{exc}") from exc
-        if audio_url:
-            def _add_audio():
-                # 等待视频装载完成（duration 有值），再添加音轨；失败重试
-                for _ in range(30):
-                    try:
-                        if self._mpv.duration is not None and self._mpv.duration > 0:
-                            break
-                    except Exception:
-                        pass
-                    time.sleep(0.1)
-                for attempt in range(3):
-                    try:
-                        self._mpv.command("audio-add", audio_url, "select")
-                        return
-                    except Exception as exc:
-                        print(f"[player] audio-add 第{attempt + 1}次失败：{exc}")
-                        time.sleep(0.3)
-            threading.Thread(target=_add_audio, daemon=True).start()
 
-        # 显式取消暂停，确保进入播放态（修复偶发的"解析后未播放"）
+        # 显式取消暂停，确保进入播放态
         try:
             self._mpv.pause = False
         except Exception:
             pass
-
-        # 诊断：1 秒后检查是否加载到音轨
-        try:
-            threading.Timer(1.0, self._check_audio).start()
-        except Exception:
-            pass
-
-    def _check_audio(self):
-        """播放后检查是否加载到音轨，若无则通过 on_event 上报详情。"""
-        try:
-            tracks = self._mpv.track_list or []
-            has_audio = any(t.get("type") == "audio" for t in tracks)
-            if not has_audio and self.on_event:
-                au = self._last_audio_url
-                detail = f"audio_url={str(au)[:80]}" if au else "audio_url=无"
-                if self._recent_logs:
-                    detail += " | " + " ".join(self._recent_logs[-4:])
-                self.on_event("no_audio", detail)
-        except Exception as exc:
-            print(f"[player] 检查音轨失败：{exc}")
 
     @staticmethod
     def _extract_streams(entry):
@@ -312,7 +377,8 @@ class Player:
         """音量增减，范围钳制在 0~150。"""
         try:
             volume = self._mpv.volume
-            self._mpv.volume = max(0, min(150, volume + delta))
+            # volume 是 double 属性，必须传浮点，否则 mpv 报 -9 格式错误
+            self._mpv.volume = float(max(0.0, min(150.0, volume + delta)))
         except Exception as exc:
             print(f"[player] 调节音量失败：{exc}")
 
@@ -327,7 +393,8 @@ class Player:
     def set_volume(self, value):
         """设置音量（0~150）。"""
         try:
-            self._mpv.volume = max(0, min(150, value))
+            # volume 是 double 属性，必须传浮点，否则 mpv 报 -9 格式错误
+            self._mpv.volume = float(max(0.0, min(150.0, value)))
         except Exception as exc:
             print(f"[player] 设置音量失败：{exc}")
 
@@ -348,11 +415,34 @@ class Player:
             return 0.0
 
     def quit(self):
-        """释放 MPV 资源。"""
+        """释放 MPV 资源，并清理本地音轨临时文件。"""
         try:
             self._mpv.terminate()
         except Exception:
             pass
+        # terminate 之后 mpv 已释放句柄，此时清理最稳
+        self.cleanup_audio_temp()
+        # 兜底：删除本进程创建的所有音轨临时文件
+        for p in list(_TEMP_AUDIO_FILES):
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        _TEMP_AUDIO_FILES.clear()
+
+    def cleanup_audio_temp(self):
+        """清理待删除的旧音轨临时文件（主线程调用；失败静默，可能仍被占用）。"""
+        garbage = getattr(self, "_audio_garbage", [])
+        self._audio_garbage = []
+        for p in garbage:
+            try:
+                if p and os.path.exists(p):
+                    os.remove(p)
+                    print(f"[player] 已清理临时音轨：{os.path.basename(p)}")
+            except Exception:
+                # 仍被占用则放回，下次再试（退出时由 quit 兜底）
+                self._audio_garbage.append(p)
 
 
 class BiliResolver:
@@ -364,8 +454,11 @@ class BiliResolver:
     def __init__(self, cookies_file=None):
         self.cookies_file = cookies_file
 
-    def resolve(self, url):
+    def resolve(self, url, flat=False):
         """解析 B 站链接，返回 yt-dlp info dict。
+
+        flat=True：合集只做扁平解析（仅拿标题 / 分 P 链接，不逐个抓流地址），
+        用于快速拿到选集列表；单视频不受影响，仍返回完整信息。
 
         返回结果可能是：
             - 单个视频：包含 url / formats 等字段
@@ -377,7 +470,12 @@ class BiliResolver:
             "skip_download": True,
             "noplaylist": False,        # 允许展开合集与分 P
             "format": "bestvideo+bestaudio/best",
+            "socket_timeout": 15,       # 避免网络卡住时长时间无响应
+            "retries": 2,
+            "extractor_retries": 1,
         }
+        if flat:
+            opts["extract_flat"] = "in_playlist"
         # 会员高清：若存在 cookies.txt 则用于请求 1080P/4K
         if self.cookies_file and os.path.exists(self.cookies_file):
             opts["cookiefile"] = self.cookies_file

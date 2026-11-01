@@ -9,12 +9,13 @@
     - 按「、」键（P 右边第三个键）打开选集窗口，打开期间无需 Alt 即可用鼠标；
     - 粘贴 B 站链接即可播放，自动识别合集并从指定分 P 开始；
     - 窗口比例随视频自动适配（100% 重合，无黑边）；
-    - 播放时在视频左上角显示当前画质 3 秒。
+    - 播放时在视频左上角显示当前画质 3 秒；
+    - 启动时窗口外沿泛柔和金色光，提示播放器位置，约 5 秒后淡出。
 
 架构说明：
     Alt 交互用「主线程 15ms 轮询 GetAsyncKeyState(VK_LMENU)」驱动，穿透切换
     与拖动均在主线程同步完成；拖动用全局鼠标左键 + 光标坐标实现，视频区
-    （mpv 子窗口覆盖）也能拖动；滚轮用全局 WH_MOUSE_LL 钩子捕获。
+    （mpv 子窗口覆盖）也能拖动。
 
 重要：keyboard 库实现全局快捷键需要【管理员权限】运行。
 """
@@ -25,14 +26,12 @@ import queue
 import re
 import sys
 import threading
-import time
 import urllib.parse
 import tkinter as tk
 import tkinter.colorchooser as colorchooser
 import tkinter.font as tkfont
 import win32api
 import win32gui
-from ctypes import wintypes
 from tkinter import messagebox
 
 from core import hotkey as hotkey_mod
@@ -181,160 +180,6 @@ class ProgressBar(tk.Canvas):
         self.set_fraction(self._frac_from_x(e.x))
         if self._on_seek:
             self._on_seek(self._fraction)
-
-
-# ---------------------------------------------------------------------------
-# 全局鼠标滚轮钩子（WH_MOUSE_LL）
-# ---------------------------------------------------------------------------
-WH_MOUSE_LL = 14
-WM_MOUSEWHEEL = 0x020A
-
-
-class _POINT(ctypes.Structure):
-    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-
-class _MSLLHOOKSTRUCT(ctypes.Structure):
-    _fields_ = [
-        ("pt", _POINT),
-        ("mouseData", wintypes.DWORD),
-        ("flags", wintypes.DWORD),
-        ("time", wintypes.DWORD),
-        ("dwExtraInfo", ctypes.c_size_t),
-    ]
-
-
-class _MSG(ctypes.Structure):
-    _fields_ = [
-        ("hwnd", wintypes.HWND),
-        ("message", wintypes.UINT),
-        ("wParam", wintypes.WPARAM),
-        ("lParam", wintypes.LPARAM),
-        ("time", wintypes.DWORD),
-        ("pt", _POINT),
-    ]
-
-
-_LowLevelMouseProc = ctypes.WINFUNCTYPE(
-    ctypes.c_long, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
-
-
-class GlobalWheelHook:
-    """按需安装的全局滚轮钩子（按住左 Alt 时启用，松开即卸载）。
-
-    消息循环用阻塞式 GetMessageW 立即处理每条消息，避免高轮询率鼠标
-    （如游戏鼠标）在轮询循环下出现指针延迟 / 乱飘。
-    """
-
-    def __init__(self, on_wheel):
-        self._on_wheel = on_wheel  # 回调(delta: +1/-1)
-        self._hook = None
-        self._proc = None
-        self._thread = None
-        self._running = False
-        self._thread_id = None
-        self._installed = None
-
-    @property
-    def active(self):
-        return self._running
-
-    def _callback(self, n_code, w_param, l_param):
-        try:
-            if n_code == 0 and w_param == WM_MOUSEWHEEL:
-                info = ctypes.cast(l_param, ctypes.POINTER(_MSLLHOOKSTRUCT)).contents
-                delta = ctypes.c_short(info.mouseData >> 16).value
-                self._on_wheel(1 if delta > 0 else -1)
-        except Exception:
-            pass
-        return ctypes.windll.user32.CallNextHookEx(
-            self._hook, n_code, w_param, l_param)
-
-    def start(self):
-        """安装全局滚轮钩子。返回 True 表示安装成功。"""
-        if self._running:
-            return True
-        try:
-            user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
-            # 关键：设置 restype/argtypes，避免 64 位句柄被截断导致安装失败
-            user32.SetWindowsHookExW.restype = ctypes.c_void_p
-            user32.SetWindowsHookExW.argtypes = [
-                ctypes.c_int, _LowLevelMouseProc, ctypes.c_void_p, wintypes.DWORD]
-            user32.CallNextHookEx.restype = ctypes.c_long
-            user32.CallNextHookEx.argtypes = [
-                ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
-            user32.GetMessageW.restype = ctypes.c_int
-            user32.GetMessageW.argtypes = [
-                ctypes.POINTER(_MSG), ctypes.c_void_p, wintypes.UINT, wintypes.UINT]
-            user32.PostThreadMessageW.restype = wintypes.BOOL
-            user32.PostThreadMessageW.argtypes = [
-                wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
-            kernel32.GetModuleHandleW.restype = ctypes.c_void_p
-            kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
-            kernel32.GetCurrentThreadId.restype = wintypes.DWORD
-        except Exception as exc:
-            print(f"[wheel] 设置函数签名失败：{exc}")
-            return False
-        self._proc = _LowLevelMouseProc(self._callback)
-        self._installed = threading.Event()
-        # 安装钩子 + 消息循环必须在同一条线程里进行
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        self._installed.wait(timeout=2.0)
-        return self._running
-
-    def _run(self):
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-        self._thread_id = kernel32.GetCurrentThreadId()
-        mod = kernel32.GetModuleHandleW(None)
-        self._hook = user32.SetWindowsHookExW(WH_MOUSE_LL, self._proc, mod, 0)
-        if not self._hook:
-            print("[wheel] 全局滚轮钩子安装失败（SetWindowsHookExW 返回 0）")
-            self._running = False
-            self._installed.set()
-            return
-        self._running = True
-        self._installed.set()
-        msg = _MSG()
-        # 阻塞式消息循环：立即处理每条鼠标消息，避免高频鼠标事件堆积
-        while self._running:
-            r = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
-            if r <= 0:
-                break
-            user32.TranslateMessage(ctypes.byref(msg))
-            user32.DispatchMessageW(ctypes.byref(msg))
-
-    def stop(self):
-        self._running = False
-        if self._hook:
-            try:
-                ctypes.windll.user32.UnhookWindowsHookEx(self._hook)
-            except Exception:
-                pass
-            self._hook = None
-        # 唤醒阻塞中的 GetMessageW，让线程退出
-        if self._thread_id:
-            try:
-                ctypes.windll.user32.PostThreadMessageW(
-                    self._thread_id, 0x0012, 0, 0)  # WM_QUIT
-            except Exception:
-                pass
-
-
-def is_admin():
-    try:
-        return bool(ctypes.windll.shell32.IsUserAnAdmin())
-    except Exception:
-        return False
-
-
-def show_native_warning(title, text):
-    try:
-        ctypes.windll.user32.MessageBoxW(0, text, title, 0x30)
-    except Exception:
-        pass
 
 
 TRANSPARENT = "#FF00FF"  # transparentcolor 使用的透明哨兵色
@@ -532,6 +377,7 @@ class GongLuePlayerApp:
         self._alt_active = False
         self._drag_offset = None
         self.player = None
+        self._collection_base_url = None   # 合集的基地址（已剥离 p 参数）
 
         self._top_visible = False
         self._bottom_visible = False
@@ -564,7 +410,6 @@ class GongLuePlayerApp:
         self._init_hwnd()
         self._init_player()
         self._init_hotkeys()
-        self._init_wheel_hook()
         self._init_mouse_bindings()
 
         window_utils.set_click_through(self.hwnd, True)
@@ -787,7 +632,7 @@ class GongLuePlayerApp:
             self._title_max_chars = 18
 
     # ------------------------------------------------------------------
-    # 句柄 / 播放器 / 快捷键 / 滚轮
+    # 句柄 / 播放器 / 快捷键
     # ------------------------------------------------------------------
     def _init_hwnd(self):
         self.hwnd = window_utils.get_hwnd(self.root)
@@ -833,11 +678,6 @@ class GongLuePlayerApp:
             cb = self._hotkey_callbacks.get(action)
             if combo and cb:
                 self.hotkeys.register(combo, lambda cb=cb: self._dispatch(cb), desc)
-
-    def _init_wheel_hook(self):
-        """已弃用全局滚轮钩子（会拖慢高轮询率游戏鼠标）。
-        滚轮调节透明度改用 Tk <MouseWheel> 绑定 + mpv 滚轮按键绑定实现。"""
-        self._wheel_hook = None
 
     # ------------------------------------------------------------------
     # 跨线程调度
@@ -1049,8 +889,7 @@ class GongLuePlayerApp:
 
     def _select_episode(self, index):
         self._close_episode_menu()
-        if 0 <= index < len(self.collection):
-            self._start_playback(self.collection[index], index, len(self.collection))
+        self._play_entry_at(index)
 
     def _close_episode_menu(self):
         try:
@@ -1592,7 +1431,6 @@ class GongLuePlayerApp:
                  bg="#ffffff", fg="#333333", wraplength=440, justify="left",
                  font=("Microsoft YaHei", 9)).pack(anchor="w", pady=(8, 4))
 
-        # 步骤说明（浏览器扩展导出）
         f2 = tk.LabelFrame(body, text="操作步骤", bg="#ffffff",
                            fg="#111111", font=("Microsoft YaHei", 10), padx=10, pady=8)
         f2.pack(fill="x", pady=(6, 4))
@@ -1660,10 +1498,44 @@ class GongLuePlayerApp:
 
     def _do_play_next(self):
         if self.collection and self.current_index + 1 < len(self.collection):
-            self._start_playback(self.collection[self.current_index + 1],
-                                 self.current_index + 1, len(self.collection))
+            self._play_entry_at(self.current_index + 1)
         else:
             self.set_status("没有下一集")
+
+    def _play_entry_at(self, index):
+        """播放选集中索引 index 的一集（扁平条目会先单独解析完整流地址）。"""
+        if not (0 <= index < len(self.collection)):
+            return
+        entry = self.collection[index]
+        # 扁平条目没有 formats / requested_formats，需要先解析完整信息
+        if entry.get("formats") is None and entry.get("requested_formats") is None:
+            self.set_status("正在解析该集 …")
+            threading.Thread(target=self._resolve_entry_and_play,
+                             args=(entry, index), daemon=True).start()
+        else:
+            self._start_playback(entry, index, len(self.collection))
+
+    def _resolve_entry_and_play(self, entry, index):
+        """把扁平选集条目解析成完整信息后再播放（后台线程）。"""
+        url = entry.get("url")
+        if (not isinstance(url, str)) or (not url):
+            base = getattr(self, "_collection_base_url", None)
+            if base:
+                url = self._with_p_param(base, index + 1)
+        if not url:
+            self._dispatch(self._on_error, "无法解析该分 P")
+            return
+        try:
+            resolver = player_mod.BiliResolver(cookies_file=self._cookies_path())
+            full = resolver.resolve(url, flat=False)
+            full_entries = player_mod.extract_playable_list(full)
+            entry_full = full_entries[0] if full_entries else entry
+        except Exception as exc:
+            self._dispatch(self._on_error, f"解析分 P 失败：{exc}")
+            return
+        # 后台线程里预下载音轨到本地临时文件，audio-add 更可靠
+        player_mod.prepare_entry_audio(entry_full)
+        self._dispatch(self._start_playback, entry_full, index, len(self.collection))
 
     def _do_play_from_clipboard(self):
         try:
@@ -1722,6 +1594,19 @@ class GongLuePlayerApp:
         except Exception:
             return url
 
+    @staticmethod
+    def _with_p_param(url, p):
+        """给 URL 设置 p 参数（分 P 序号），用于单独解析某一集。"""
+        try:
+            parts = urllib.parse.urlsplit(url)
+            qs = urllib.parse.parse_qs(parts.query)
+            qs["p"] = [str(p)]
+            new_query = urllib.parse.urlencode(qs, doseq=True)
+            return urllib.parse.urlunsplit(
+                (parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
+        except Exception:
+            return url
+
     def _cookies_path(self):
         """返回 cookies.txt 路径（用于会员高清画质）。打包后写 exe 同级目录。"""
         if getattr(sys, "frozen", False):
@@ -1729,21 +1614,49 @@ class GongLuePlayerApp:
         return os.path.join(config_mod.APP_DIR, "cookies.txt")
 
     def _resolve_and_play(self, url, start_p=None):
+        # 第一步：扁平解析（合集只拿选集列表，快）；单视频仍返回完整信息
         try:
             resolver = player_mod.BiliResolver(cookies_file=self._cookies_path())
-            info = resolver.resolve(url)
-            entries = player_mod.extract_playable_list(info)
+            info = resolver.resolve(url, flat=True)
         except Exception as exc:
             self._dispatch(self._on_error, f"解析失败：{exc}")
             return
+
+        is_playlist = info.get("_type") == "playlist" or "entries" in info
+        if is_playlist:
+            raw_entries = [e for e in (info.get("entries") or []) if e]
+            if not raw_entries:
+                self._dispatch(self._on_error, "未解析出可播放内容")
+                return
+            start_idx = start_p if (start_p is not None and 0 <= start_p < len(raw_entries)) else 0
+            # 扁平条目没有流地址，单独解析目标分 P（带 ?p=N 只返回单集，速度快）
+            target_url = self._with_p_param(url, start_idx + 1)
+            entry = None
+            try:
+                full = resolver.resolve(target_url, flat=False)
+                full_entries = player_mod.extract_playable_list(full)
+                if full_entries:
+                    entry = full_entries[0]
+            except Exception as exc:
+                print(f"[main] 解析分 P 失败：{exc}")
+            if entry is None:
+                # 兜底：用扁平条目自身的信息（可能缺流地址，播放会报错）
+                entry = raw_entries[start_idx]
+            # 后台线程里预下载音轨到本地临时文件，audio-add 更可靠
+            player_mod.prepare_entry_audio(entry)
+            self.collection = raw_entries
+            self._collection_base_url = url
+            self._dispatch(self._start_playback, entry, start_idx, len(raw_entries))
+            return
+
+        entries = player_mod.extract_playable_list(info)
         if not entries:
             self._dispatch(self._on_error, "未解析出可播放内容")
             return
+        # 后台线程里预下载音轨到本地临时文件，audio-add 更可靠
+        player_mod.prepare_entry_audio(entries[0])
         self.collection = entries
-        start_idx = 0
-        if start_p is not None and 0 <= start_p < len(entries):
-            start_idx = start_p
-        self._dispatch(self._start_playback, entries[start_idx], start_idx, len(entries))
+        self._dispatch(self._start_playback, entries[0], 0, len(entries))
 
     def _start_playback(self, entry, index, total):
         if not self.player:
@@ -1760,8 +1673,35 @@ class GongLuePlayerApp:
             self._title_offset = 0
             self._show_quality_label(entry)
             self._update_pause_btn()
+            # 启动主线程轮询挂载音轨（不依赖 mpv 事件，更可靠）
+            self._audio_attach_attempts = 0
+            prev_id = getattr(self, "_audio_attach_after_id", None)
+            if prev_id:
+                try:
+                    self.root.after_cancel(prev_id)
+                except Exception:
+                    pass
+            self._schedule_audio_attach()
+            # 延迟清理上一次播放留下的临时音轨（等 mpv 释放文件句柄后再删）
+            self.root.after(3000, self._cleanup_audio_temp)
         except Exception as exc:
             self._on_error(f"播放失败：{exc}")
+
+    def _cleanup_audio_temp(self):
+        if self.player:
+            self.player.cleanup_audio_temp()
+
+    def _schedule_audio_attach(self):
+        """主线程轮询挂载 B 站 DASH 音轨，最多重试若干次。"""
+        if not self.player:
+            return
+        self._audio_attach_attempts = getattr(self, "_audio_attach_attempts", 0) + 1
+        if self._audio_attach_attempts > 25:
+            print("[main] 音轨挂载重试超时")
+            return
+        if self.player.attach_pending_audio():
+            return  # 已挂载 / 无需挂载，停止轮询
+        self._audio_attach_after_id = self.root.after(400, self._schedule_audio_attach)
 
     def _fit_window_to_video(self, entry):
         """按视频宽高比调整窗口，使其与画面 100% 重合（无黑边）。"""
@@ -1797,9 +1737,6 @@ class GongLuePlayerApp:
             if self.auto_play_next and self.current_index + 1 < len(self.collection):
                 nxt = self.collection[self.current_index + 1]
                 self._start_playback(nxt, self.current_index + 1, len(self.collection))
-        elif event_name == "no_audio":
-            detail = args[0] if args else ""
-            self.set_status(f"未检测到音轨 {detail}")
 
     # ------------------------------------------------------------------
     # 画质标签 / 提示
@@ -1907,6 +1844,23 @@ class GongLuePlayerApp:
             self.root.destroy()
         except Exception:
             pass
+
+
+def is_admin():
+    """判断当前进程是否以管理员权限运行。"""
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def show_native_warning(title, message):
+    """在主循环启动前用系统 MessageBox 弹窗提示（keyboard 库权限提示）。"""
+    try:
+        # MB_OK | MB_ICONWARNING = 0x00000030
+        ctypes.windll.user32.MessageBoxW(0, message, title, 0x30)
+    except Exception as exc:
+        print(f"[main] 弹出权限提示失败：{exc}")
 
 
 def main():
