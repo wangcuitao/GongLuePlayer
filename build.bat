@@ -33,7 +33,7 @@ echo.
 
 echo [1/3] Installing dependencies + PyInstaller ...
 %PY% -m pip install --upgrade pip
-%PY% -m pip install yt-dlp "python-mpv>=1.0.5" "pywin32>=306" "keyboard>=0.13.5" pyinstaller
+%PY% -m pip install "yt-dlp>=2024.10.22" "python-mpv>=1.0.5" "pywin32>=306" "keyboard>=0.13.5" pyinstaller
 if errorlevel 1 (
     echo [ERROR] pip install failed.
     pause

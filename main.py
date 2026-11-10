@@ -55,6 +55,13 @@ TOP_OVERLAY_H = 32
 BOTTOM_OVERLAY_H = 28
 ROUND_RADIUS = 14
 
+# Windows 11 风格配色 / 字体
+WIN_ACCENT = "#0067C0"       # 强调色（Win11 蓝）
+WIN_BG = "#ffffff"
+WIN_FG = "#111111"
+WIN_BORDER = "#E5E5E5"
+UI_FONT = "Microsoft YaHei UI"
+
 RE_B23_SHORT = re.compile(r"https?://b23\.tv/[A-Za-z0-9]+")
 RE_BILI_FULL = re.compile(r"https?://[^\s\"'<>]+bilibili\.com/[^\s\"'<>]+")
 
@@ -204,8 +211,8 @@ def _round_rect_points(x, y, w, h, r, n=16):
 class RoundCard:
     """圆角提示卡片：transparentcolor + Canvas 自绘，消除黑边锯齿。"""
 
-    def __init__(self, parent, radius=ROUND_RADIUS, bg="#ffffff", fg="#111111",
-                 font_family="Microsoft YaHei", font_size=10):
+    def __init__(self, parent, radius=ROUND_RADIUS, bg=WIN_BG, fg=WIN_FG,
+                 font_family=UI_FONT, font_size=10):
         self.radius = radius
         self.bg = bg
         self.fg = fg
@@ -259,7 +266,7 @@ class RoundCard:
             bx = self._w - btn_w - pad_x
             b = c.create_polygon(
                 _round_rect_points(bx, by, btn_w, btn_h, btn_h // 2),
-                smooth=True, fill="#3a6ea5", outline="")
+                smooth=True, fill=WIN_ACCENT, outline="")
             c.create_text(bx + btn_w / 2, by + btn_h / 2, text=btn_text,
                           font=(self.font_family, self.font_size), fill="#ffffff")
             c.tag_bind(b, "<Button-1>", lambda e: cb())
@@ -320,14 +327,14 @@ class RoundedWindow:
         c = self.canvas
         c.delete("all")
         c.create_polygon(_round_rect_points(0, 0, self.width, self.height, self.radius),
-                         smooth=True, fill="#ffffff", outline="#e3e3e3", width=1)
+                         smooth=True, fill=WIN_BG, outline=WIN_BORDER, width=1)
         c.create_text(20, 24, text=title, anchor="w",
-                      font=("Microsoft YaHei", 11, "bold"), fill="#111111")
+                      font=(UI_FONT, 11, "bold"), fill=WIN_FG)
         close = c.create_text(self.width - 22, 24, text="×", anchor="center",
-                              font=("Microsoft YaHei", 15), fill="#111111")
+                              font=(UI_FONT, 15), fill=WIN_FG)
         c.tag_bind(close, "<Button-1>", lambda e: self._close())
         # 内容区（内缩半径，避免方形 Frame 盖住圆角）
-        self.body = tk.Frame(self.win, bg="#ffffff")
+        self.body = tk.Frame(self.win, bg=WIN_BG)
         self.body.place(x=self.radius, y=42,
                         width=self.width - 2 * self.radius,
                         height=self.height - 42 - self.radius)
@@ -386,6 +393,7 @@ class GongLuePlayerApp:
         self._bili_win = None
         self._startup_win = None
         self._episode_menu = None
+        self._episode_listbox = None
         self._quality_card = None
         self._quality_after_id = None
         self._toast_card = None
@@ -733,10 +741,9 @@ class GongLuePlayerApp:
             ww, wh = self.root.winfo_width(), self.root.winfo_height()
             inside = wx <= px < wx + ww and wy <= py < wy + wh
             if inside:
-                if (py - wy) < wh * 0.5:
-                    show_top = True
-                else:
-                    show_bottom = True
+                # 只要鼠标在播放器窗口内，顶部工具栏与底部进度条同时显示
+                show_top = True
+                show_bottom = True
         except Exception:
             pass
         self._set_overlays_visible(show_top, show_bottom)
@@ -867,25 +874,83 @@ class GongLuePlayerApp:
             return
         self._menu_open = True
         self._apply_click_through(False)  # 打开菜单期间允许鼠标操作，无需 Alt
-        menu = tk.Menu(self.root, tearoff=0, bg="#ffffff", fg="#111111",
-                       activebackground="#e8e8e8", activeforeground="#111111")
+
+        total = len(self.collection)
+        row_h = 32
+        max_rows = 12
+        list_h = min(total, max_rows) * row_h
+        header_h = 36
+        width = 470
+        height = header_h + list_h + 10
+
+        win = tk.Toplevel(self.root)
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        try:
+            win.attributes("-transparentcolor", TRANSPARENT)
+        except Exception:
+            pass
+        win.configure(bg=TRANSPARENT)
+
+        c = tk.Canvas(win, bg=TRANSPARENT, highlightthickness=0, bd=0,
+                      width=width, height=height)
+        c.pack()
+        # 圆角卡片（Win11 风格）
+        c.create_polygon(_round_rect_points(0, 0, width, height, 10),
+                         smooth=True, fill=WIN_BG, outline=WIN_BORDER, width=1)
+        c.create_text(16, header_h // 2, text=f"选集 · 共 {total} 集",
+                      anchor="w", font=(UI_FONT, 10, "bold"), fill=WIN_FG)
+
+        list_frame = tk.Frame(win, bg=WIN_BG)
+        list_frame.place(x=10, y=header_h, width=width - 20, height=list_h)
+
+        sb = tk.Scrollbar(list_frame, orient="vertical")
+        lb = tk.Listbox(
+            list_frame, yscrollcommand=sb.set, bg=WIN_BG, fg=WIN_FG,
+            selectbackground=WIN_ACCENT, selectforeground="#ffffff",
+            activestyle="none", highlightthickness=0, bd=0,
+            font=(UI_FONT, 10), height=max_rows,
+        )
+        sb.config(command=lb.yview)
+        lb.pack(side="left", fill="both", expand=True)
+        if total > max_rows:
+            sb.pack(side="right", fill="y")
+
         for i, entry in enumerate(self.collection):
             title = entry.get("title") or f"第 {i + 1} 集"
-            if i == self.current_index:
-                title = f"▶ {title}"
-            menu.add_command(
-                label=f"{i + 1}. {title}",
-                command=lambda i=i: self._select_episode(i),
-            )
-        self._episode_menu = menu
+            prefix = "▶ " if i == self.current_index else "  "
+            lb.insert("end", f"{prefix}{i + 1}. {title}")
+
+        def _on_select(_e=None):
+            sel = lb.curselection()
+            if sel:
+                self._select_episode(sel[0])
+
+        lb.bind("<ButtonRelease-1>", _on_select)
+        win.bind("<Escape>", lambda e: self._close_episode_menu())
+
+        # 定位：优先放在窗口右侧，放不下再放上方
         try:
-            menu.update_idletasks()
-            x = self.root.winfo_x() + self.root.winfo_width() - 20
-            y = self.root.winfo_y() + self.root.winfo_height() - menu.winfo_reqheight() - 40
-            menu.tk_popup(x, y)
-        except Exception as exc:
-            print(f"[main] 选集菜单弹出失败：{exc}")
-            self._close_episode_menu()
+            wx = self.root.winfo_x()
+            wy = self.root.winfo_y()
+            ww = self.root.winfo_width()
+            wh = self.root.winfo_height()
+            sw, sh = window_utils.get_screen_size()
+            x = wx + ww - width - 12
+            if x < 8:
+                x = 8
+            y = wy + wh + 8
+            if y + height > sh - 60:
+                y = wy - height - 8
+            if y < 8:
+                y = wy + 8
+            win.geometry(f"{width}x{height}+{x}+{y}")
+        except Exception:
+            pass
+
+        self._episode_menu = win
+        self._episode_listbox = lb
+        win.focus_force()
 
     def _select_episode(self, index):
         self._close_episode_menu()
@@ -894,10 +959,11 @@ class GongLuePlayerApp:
     def _close_episode_menu(self):
         try:
             if self._episode_menu is not None:
-                self._episode_menu.unpost()
+                self._episode_menu.destroy()
         except Exception:
             pass
         self._episode_menu = None
+        self._episode_listbox = None
         self._menu_open = False
         self._apply_click_through(not self._alt_active)
 
@@ -1083,7 +1149,7 @@ class GongLuePlayerApp:
 
             tk.Button(win, text="确认",
                       command=lambda: self._dismiss_startup_hint(win),
-                      bg="#3a6ea5", fg="#ffffff", relief="flat", padx=30, pady=4,
+                      bg=WIN_ACCENT, fg="#ffffff", relief="flat", padx=30, pady=4,
                       font=("Microsoft YaHei", 10), cursor="hand2").pack(
                 anchor="e", padx=20, pady=(6, 16))
 
@@ -1185,7 +1251,7 @@ class GongLuePlayerApp:
                        anchor="w").grid(row=row, column=0, columnspan=6, sticky="w")
         row += 1
         tk.Button(body, text="B站会员登录（高清画质）…", command=self._open_bili_login,
-                  bg="#3a6ea5", fg="#ffffff", relief="flat", padx=10).grid(
+                  bg=WIN_ACCENT, fg="#ffffff", relief="flat", padx=10).grid(
             row=row, column=0, columnspan=6, sticky="w", pady=2)
         row += 1
         tk.Label(body, text="默认透明度 (0.1~1.0)", bg="#ffffff", fg="#333333").grid(
@@ -1245,7 +1311,7 @@ class GongLuePlayerApp:
         tk.Button(btn_row, text="恢复默认", command=self._reset_settings_defaults,
                   bg="#eeeeee", fg="#111111", relief="flat", padx=10).pack(side="left")
         tk.Button(btn_row, text="保存并应用", command=self._apply_settings,
-                  bg="#3a6ea5", fg="#ffffff", relief="flat", padx=10).pack(side="right")
+                  bg=WIN_ACCENT, fg="#ffffff", relief="flat", padx=10).pack(side="right")
         tk.Button(btn_row, text="取消", command=self._close_settings,
                   bg="#eeeeee", fg="#111111", relief="flat", padx=10).pack(
             side="right", padx=4)
@@ -1414,7 +1480,7 @@ class GongLuePlayerApp:
     # B站会员登录（Cookie 提取）
     # ------------------------------------------------------------------
     def _open_bili_login(self):
-        """打开「B站会员登录」二级界面，指导用浏览器扩展导出 cookie。"""
+        """打开「B站会员登录」二级界面，手动粘贴 Cookie（无需任何插件）。"""
         if self._bili_win is not None:
             try:
                 if self._bili_win.winfo_exists():
@@ -1423,48 +1489,99 @@ class GongLuePlayerApp:
                     return
             except Exception:
                 pass
-        rw = RoundedWindow(self.root, "B站会员登录（高清画质）", 500, 440)
+        rw = RoundedWindow(self.root, "B站会员登录（高清画质）", 540, 600)
         self._bili_win = rw.win
 
         body = rw.body
         tk.Label(body, text="播放器通过读取程序目录下的 cookies.txt，以会员身份请求 B 站 1080P/4K 高清画质。",
-                 bg="#ffffff", fg="#333333", wraplength=440, justify="left",
+                 bg="#ffffff", fg="#333333", wraplength=480, justify="left",
                  font=("Microsoft YaHei", 9)).pack(anchor="w", pady=(8, 4))
 
-        f2 = tk.LabelFrame(body, text="操作步骤", bg="#ffffff",
-                           fg="#111111", font=("Microsoft YaHei", 10), padx=10, pady=8)
-        f2.pack(fill="x", pady=(6, 4))
-        tk.Label(f2, text=(
-            "1. 用 Chrome 或 Edge 浏览器登录 bilibili.com 并保持登录状态。\n"
-            "2. 打开浏览器扩展商店，搜索并安装「Get cookies.txt LOCALLY」。\n"
-            "3. 访问任意 bilibili.com 页面（如首页）。\n"
-            "4. 点击浏览器右上角的扩展图标，选择「Export」（导出）。\n"
-            "5. 把导出的文件重命名为 cookies.txt。\n"
-            "6. 将 cookies.txt 放到程序所在目录（可点下方按钮打开）。\n\n"
-            "放置后，下次粘贴播放视频时即会自动以会员身份请求最高画质。"),
-            bg="#ffffff", fg="#333333", justify="left", wraplength=420,
+        f = tk.LabelFrame(body, text="手动获取 Cookie（无需任何插件）", bg="#ffffff",
+                          fg="#111111", font=("Microsoft YaHei", 10), padx=10, pady=8)
+        f.pack(fill="x", pady=(6, 4))
+        tk.Label(f, text=(
+            "1. 用 Chrome / Edge / Firefox 打开 bilibili.com 并登录。\n"
+            "2. 按 F12 打开「开发者工具」，点上方「网络 / Network」标签页。\n"
+            "3. 按 F5 刷新，让左侧出现请求列表。\n"
+            "4. 左侧点第一条请求（一般是 bilibili.com）。\n"
+            "5. 右侧「标头 / Headers」→「请求标头 / Request Headers」。\n"
+            "6. 找到「Cookie:」这一行，复制它后面的整串内容。\n"
+            "7. 粘贴到下方输入框，点「保存 Cookie」，再点「测试 Cookie 是否有效」。"),
+            bg="#ffffff", fg="#333333", justify="left", wraplength=460,
             font=("Microsoft YaHei", 9)).pack(anchor="w")
+
+        self._cookie_input = tk.Text(body, height=3, width=58, bg="#ffffff",
+                                     fg="#111111", insertbackground="#111111",
+                                     relief="solid", bd=1, font=("Consolas", 9))
+        self._cookie_input.pack(fill="x", pady=(6, 2))
+        # 若已保存过 Cookie，回填到输入框，便于确认（关窗再开不再为空）
+        try:
+            from core import cookies as cookies_mod
+            existing = cookies_mod.load_cookie_header(self._cookies_path())
+            if existing:
+                self._cookie_input.insert("1.0", existing)
+        except Exception:
+            pass
+
+        paste_row = tk.Frame(body, bg="#ffffff")
+        paste_row.pack(fill="x")
+        tk.Button(paste_row, text="保存 Cookie", command=self._do_save_pasted_cookie,
+                  bg=WIN_ACCENT, fg="#ffffff", relief="flat", padx=12, pady=4,
+                  font=("Microsoft YaHei", 9), cursor="hand2").pack(side="left")
+        tk.Button(paste_row, text="测试 Cookie 是否有效", command=self._do_test_cookie,
+                  bg=WIN_ACCENT, fg="#ffffff", relief="flat", padx=12, pady=4,
+                  font=("Microsoft YaHei", 9), cursor="hand2").pack(side="left", padx=6)
+        tk.Label(paste_row, text="只复制 SESSDATA 那一项的值也可以",
+                 bg="#ffffff", fg="#999999", font=("Microsoft YaHei", 8)).pack(
+            side="left", padx=8)
 
         self._bili_status = tk.StringVar(value="")
         tk.Label(body, textvariable=self._bili_status, bg="#ffffff", fg="#b8860b",
-                 font=("Microsoft YaHei", 9)).pack(anchor="w", pady=(6, 2))
+                 wraplength=480, justify="left",
+                 font=("Microsoft YaHei", 9)).pack(anchor="w", pady=(8, 2))
 
-        btns = tk.Frame(body, bg="#ffffff")
-        btns.pack(fill="x", pady=(4, 0))
-        tk.Button(btns, text="打开程序目录", command=self._do_open_app_dir,
+        btn_row = tk.Frame(body, bg="#ffffff")
+        btn_row.pack(fill="x", pady=(6, 0))
+        tk.Button(btn_row, text="打开程序目录", command=self._do_open_app_dir,
                   bg="#eeeeee", fg="#111111", relief="flat", padx=10).pack(side="left")
-        tk.Button(btns, text="检测 cookies.txt 是否就绪", command=self._do_check_cookies,
+        tk.Button(btn_row, text="关闭", command=lambda: self._bili_win.destroy(),
                   bg="#eeeeee", fg="#111111", relief="flat", padx=10).pack(
             side="left", padx=6)
-        tk.Button(btns, text="关闭", command=lambda: self._bili_win.destroy(),
-                  bg="#eeeeee", fg="#111111", relief="flat", padx=10).pack(side="right")
+
+        # 打开时若已有 cookies.txt，自动检测并显示状态
+        self.root.after(50, self._do_check_cookies)
+
+    def _do_save_pasted_cookie(self):
+        """把用户粘贴的 Cookie 字符串保存为 cookies.txt，并回显保存路径。"""
+        from core import cookies as cookies_mod
+        raw = self._cookie_input.get("1.0", "end")
+        ok, msg = cookies_mod.save_cookie_string(raw, self._cookies_path())
+        if ok:
+            self._bili_status.set(f"✅ {msg}")
+        else:
+            self._bili_status.set(f"❌ {msg}")
+
+    def _do_test_cookie(self):
+        """真实请求 B 站接口，测试已保存的 Cookie 是否有效（后台线程）。"""
+        self._bili_status.set("正在测试 Cookie 是否有效…")
+        threading.Thread(target=self._test_cookie_worker, daemon=True).start()
+
+    def _test_cookie_worker(self):
+        from core import cookies as cookies_mod
+        ok, msg = cookies_mod.test_cookie(self._cookies_path())
+        if ok:
+            self._dispatch(self._bili_status.set, f"✅ {msg}，可正常请求高清画质。")
+        else:
+            self._dispatch(self._bili_status.set, f"❌ {msg}")
 
     def _do_check_cookies(self):
         path = self._cookies_path()
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            self._bili_status.set("cookies.txt 已就绪，下次播放视频时即会请求高清画质。")
+        ok, msg = player_mod.check_bilibili_cookie(path)
+        if ok:
+            self._bili_status.set(f"✅ {msg}，下次播放视频时即会请求高清画质。")
         else:
-            self._bili_status.set("未检测到 cookies.txt，请按上方步骤导出。")
+            self._bili_status.set(f"❌ {msg}")
 
     def _do_open_app_dir(self):
         try:
@@ -1516,12 +1633,13 @@ class GongLuePlayerApp:
             self._start_playback(entry, index, len(self.collection))
 
     def _resolve_entry_and_play(self, entry, index):
-        """把扁平选集条目解析成完整信息后再播放（后台线程）。"""
+        """把选集条目解析成完整信息后再播放（后台线程）。"""
         url = entry.get("url")
         if (not isinstance(url, str)) or (not url):
             base = getattr(self, "_collection_base_url", None)
             if base:
-                url = self._with_p_param(base, index + 1)
+                page = entry.get("page") or (index + 1)
+                url = self._with_p_param(base, page)
         if not url:
             self._dispatch(self._on_error, "无法解析该分 P")
             return
@@ -1533,6 +1651,9 @@ class GongLuePlayerApp:
         except Exception as exc:
             self._dispatch(self._on_error, f"解析分 P 失败：{exc}")
             return
+        # 用选集中的完整分 P 标题覆盖（保证标题正确显示）
+        if entry.get("title"):
+            entry_full["title"] = entry["title"]
         # 后台线程里预下载音轨到本地临时文件，audio-add 更可靠
         player_mod.prepare_entry_audio(entry_full)
         self._dispatch(self._start_playback, entry_full, index, len(self.collection))
@@ -1614,7 +1735,7 @@ class GongLuePlayerApp:
         return os.path.join(config_mod.APP_DIR, "cookies.txt")
 
     def _resolve_and_play(self, url, start_p=None):
-        # 第一步：扁平解析（合集只拿选集列表，快）；单视频仍返回完整信息
+        # 第一步：扁平解析，拿 bvid（短链也会被重定向解析出 bvid）
         try:
             resolver = player_mod.BiliResolver(cookies_file=self._cookies_path())
             info = resolver.resolve(url, flat=True)
@@ -1622,14 +1743,61 @@ class GongLuePlayerApp:
             self._dispatch(self._on_error, f"解析失败：{exc}")
             return
 
+        # 提取 bvid（BV 开头）或 aid（老视频纯数字）
+        vid = info.get("id") or info.get("video_id")
+
+        # 第二步：用官方分 P 接口拿完整分 P 列表（识别可靠、标题完整）
+        pages = []
+        if vid:
+            try:
+                from core import cookies as cookies_mod
+                cookie_header = cookies_mod.load_cookie_header(self._cookies_path())
+                pages = player_mod.fetch_pagelist(vid, cookie_header)
+            except Exception as exc:
+                print(f"[main] 获取分 P 列表失败：{exc}")
+
+        if len(pages) > 1:
+            # 多 P 视频
+            collection = [{
+                "title": pg["part"],
+                "page": pg["page"],
+                "cid": pg["cid"],
+                "duration": pg["duration"],
+            } for pg in pages]
+            start_idx = start_p if (start_p is not None and 0 <= start_p < len(collection)) else 0
+            self.collection = collection
+            self._collection_base_url = url
+
+            # 在后台线程里直接解析目标分 P（带 ?p=N 只返回单集，快）
+            page_no = collection[start_idx]["page"]
+            target_url = self._with_p_param(url, page_no)
+            entry = None
+            try:
+                full = resolver.resolve(target_url, flat=False)
+                full_entries = player_mod.extract_playable_list(full)
+                if full_entries:
+                    entry = full_entries[0]
+            except Exception as exc:
+                print(f"[main] 解析分 P 失败：{exc}")
+            if entry is None:
+                self._dispatch(self._on_error, "解析分 P 失败")
+                return
+            # 用分 P 完整标题覆盖（保证标题正确显示）
+            entry["title"] = collection[start_idx]["title"]
+            player_mod.prepare_entry_audio(entry)
+            self._dispatch(self._start_playback, entry, start_idx, len(collection))
+            return
+
+        # 分 P 接口未返回多 P（可能是单集，也可能是接口失败）——用 yt-dlp 结构兜底
         is_playlist = info.get("_type") == "playlist" or "entries" in info
         if is_playlist:
             raw_entries = [e for e in (info.get("entries") or []) if e]
             if not raw_entries:
                 self._dispatch(self._on_error, "未解析出可播放内容")
                 return
+            if len(pages) == 1 and raw_entries:
+                raw_entries[0]["title"] = pages[0]["part"]
             start_idx = start_p if (start_p is not None and 0 <= start_p < len(raw_entries)) else 0
-            # 扁平条目没有流地址，单独解析目标分 P（带 ?p=N 只返回单集，速度快）
             target_url = self._with_p_param(url, start_idx + 1)
             entry = None
             try:
@@ -1640,20 +1808,18 @@ class GongLuePlayerApp:
             except Exception as exc:
                 print(f"[main] 解析分 P 失败：{exc}")
             if entry is None:
-                # 兜底：用扁平条目自身的信息（可能缺流地址，播放会报错）
                 entry = raw_entries[start_idx]
-            # 后台线程里预下载音轨到本地临时文件，audio-add 更可靠
             player_mod.prepare_entry_audio(entry)
             self.collection = raw_entries
             self._collection_base_url = url
             self._dispatch(self._start_playback, entry, start_idx, len(raw_entries))
             return
 
+        # 单集视频
         entries = player_mod.extract_playable_list(info)
         if not entries:
             self._dispatch(self._on_error, "未解析出可播放内容")
             return
-        # 后台线程里预下载音轨到本地临时文件，audio-add 更可靠
         player_mod.prepare_entry_audio(entries[0])
         self.collection = entries
         self._dispatch(self._start_playback, entries[0], 0, len(entries))
@@ -1673,6 +1839,7 @@ class GongLuePlayerApp:
             self._title_offset = 0
             self._show_quality_label(entry)
             self._update_pause_btn()
+            self._warn_if_low_quality(entry)
             # 启动主线程轮询挂载音轨（不依赖 mpv 事件，更可靠）
             self._audio_attach_attempts = 0
             prev_id = getattr(self, "_audio_attach_after_id", None)
@@ -1690,6 +1857,19 @@ class GongLuePlayerApp:
     def _cleanup_audio_temp(self):
         if self.player:
             self.player.cleanup_audio_temp()
+
+    def _warn_if_low_quality(self, entry):
+        """画质过低时提示（大概率是 cookie 无效/过期，B 站未登录只给 480P）。"""
+        try:
+            h = player_mod.get_entry_max_height(entry)
+            path = self._cookies_path()
+            if 0 < h <= 480 and os.path.exists(path):
+                self.set_status(
+                    f"当前仅 {h}P：cookie 可能无效或已过期，请在设置→B站会员登录里重新检测",
+                    6000,
+                )
+        except Exception as exc:
+            print(f"[main] 检查画质失败：{exc}")
 
     def _schedule_audio_attach(self):
         """主线程轮询挂载 B 站 DASH 音轨，最多重试若干次。"""

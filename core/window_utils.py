@@ -72,30 +72,3 @@ def set_click_through(hwnd, enabled):
         )
     except Exception as exc:
         print(f"[window_utils] 设置鼠标穿透失败：{exc}")
-
-
-def is_click_through(hwnd):
-    """查询窗口当前是否处于鼠标穿透状态。"""
-    try:
-        style = win32gui.GetWindowLong(hwnd, win32con.GWL_EXSTYLE)
-        return bool(style & win32con.WS_EX_TRANSPARENT)
-    except Exception:
-        return False
-
-
-def move_window(hwnd, x, y, width, height):
-    """移动并设置窗口位置 / 尺寸。"""
-    win32gui.SetWindowPos(hwnd, win32con.HWND_TOPMOST, x, y, width, height,
-                          win32con.SWP_SHOWWINDOW)
-
-
-def position_bottom_left(hwnd, width=WINDOW_WIDTH, height=WINDOW_HEIGHT, margin=10):
-    """计算窗口在屏幕左下角的坐标，返回 (x, y)。
-
-    左下角定位逻辑：x 贴左、y = 工作区底部 - 窗口高度 - 边距，
-    保留原实现不变，仅默认宽高改为 16:9（800x450）。
-    """
-    left, top, right, bottom = get_work_area()
-    x = left + margin
-    y = bottom - height - margin
-    return x, y

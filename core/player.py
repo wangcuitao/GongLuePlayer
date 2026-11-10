@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 import urllib.request
 
 
@@ -45,8 +46,6 @@ try:
 except Exception as exc:      # 可能是 libmpv-2.dll 未放置导致
     mpv = None
     MPV_IMPORT_ERROR = exc
-
-import yt_dlp
 
 # 本进程创建的所有音轨临时文件（用于退出时统一兜底清理）
 _TEMP_AUDIO_FILES = []
@@ -106,6 +105,116 @@ def prepare_entry_audio(entry):
     except Exception as exc:
         print(f"[player] 预处理音轨失败：{exc}")
         entry["_audio_local_path"] = None
+
+
+def check_bilibili_cookie(path):
+    """检查 B 站 cookies.txt 是否有效，返回 (ok, message)。
+
+    只查「文件存在」不能说明 cookie 有效——B 站高画质依赖登录态 SESSDATA，
+    这里真正解析 Netscape 格式的 cookie 文件，检查 SESSDATA 是否存在、是否过期，
+    给设置界面的「检测 cookies.txt」提供真实诊断。
+    """
+    if not path or not os.path.exists(path):
+        return False, "未找到 cookies.txt"
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+    except Exception as exc:
+        return False, f"读取失败：{exc}"
+
+    sessdata = None
+    sessdata_expiry = 0
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t")
+        # Netscape 格式：domain, include_subdomains, path, secure, expiry, name, value
+        if len(parts) < 7:
+            continue
+        name = parts[5]
+        value = parts[6]
+        if name == "SESSDATA":
+            sessdata = value
+            try:
+                sessdata_expiry = int(parts[4])
+            except Exception:
+                sessdata_expiry = 0
+
+    if not sessdata:
+        return False, "cookies.txt 里没有 SESSDATA 登录凭证（请确认已登录 B 站后，用「Get cookies.txt LOCALLY」导出 Netscape 格式）"
+    if sessdata_expiry and sessdata_expiry < int(time.time()):
+        return False, "SESSDATA 已过期，请重新登录 B 站并重新导出 cookie"
+    return True, "cookie 有效，已包含 SESSDATA 登录凭证"
+
+
+def get_entry_max_height(entry):
+    """返回条目可用画质里最高的高度（像素），用于判断是否拿到高清。"""
+    heights = []
+    try:
+        for fmt in entry.get("formats") or []:
+            h = fmt.get("height")
+            if isinstance(h, int) and h > 0:
+                heights.append(h)
+    except Exception:
+        pass
+    h = entry.get("height")
+    if isinstance(h, int) and h > 0:
+        heights.append(h)
+    return max(heights) if heights else 0
+
+
+def fetch_pagelist(vid, cookie_header=None):
+    """用 B 站官方分 P 接口获取视频的分 P 列表（含完整标题）。
+
+    参数:
+        vid: 视频 bvid（BV 开头）或 aid（老视频纯数字）。
+        cookie_header: 可选的 Cookie 请求头字符串（会员视频分 P 列表可能需要登录）。
+
+    返回列表，每项 {"page": 页码, "part": 分P完整标题, "cid": 分P cid,
+    "duration": 时长}；失败返回空列表。相比 yt-dlp 的 extract_flat，
+    这个接口对分 P 识别更可靠、标题也完整。
+    """
+    import json
+    import urllib.parse
+    vid_str = str(vid or "").strip()
+    if not vid_str:
+        return []
+    if vid_str.lower().startswith("bv"):
+        param = f"bvid={urllib.parse.quote(vid_str)}"
+    else:
+        param = f"aid={urllib.parse.quote(vid_str)}"
+    url = f"https://api.bilibili.com/x/player/pagelist?{param}&jsonp=jsonp"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": "https://www.bilibili.com/",
+    }
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+    except Exception as exc:
+        print(f"[player] 获取分 P 列表失败：{exc}")
+        return []
+    if not isinstance(data, dict) or data.get("code") != 0:
+        return []
+    pages = data.get("data") or []
+    result = []
+    for p in pages:
+        if not isinstance(p, dict):
+            continue
+        page = p.get("page") or 1
+        part = (p.get("part") or "").strip() or f"第 {page} 集"
+        result.append({
+            "page": page,
+            "part": part,
+            "cid": p.get("cid"),
+            "duration": p.get("duration"),
+        })
+    return result
 
 
 class Player:
@@ -186,12 +295,28 @@ class Player:
         返回 True 表示无需再重试（已挂载 / 无待挂载），False 表示本次失败、
         需稍后重试（保留 _pending_audio）。audio-file 是「仅加载时读取」的选项，
         无法在运行时用属性设置；audio-add 是官方推荐的运行时挂载命令。
+
+        先检查现有音轨再决定是否 add，避免重试时反复 audio-add 堆积重复音轨
+        （这是长期运行卡顿、切集异常的隐患之一）。
         """
         if getattr(self, "_audio_attached", False):
             return True
         audio_url = getattr(self, "_pending_audio", None)
         if not audio_url:
             return True
+
+        # 已有外部音轨则直接视为挂载成功，避免重复 add
+        try:
+            tracks = self._mpv.track_list or []
+            external = [t for t in tracks
+                        if t.get("type") == "audio" and t.get("external")]
+            if external:
+                self._pending_audio = None
+                self._audio_attached = True
+                return True
+        except Exception:
+            pass
+
         try:
             self._mpv.command("audio-add", audio_url, "select")
         except Exception as exc:
@@ -201,17 +326,11 @@ class Player:
         try:
             tracks = self._mpv.track_list or []
             aids = [t for t in tracks if t.get("type") == "audio"]
-            info = [{"id": t.get("id"), "title": t.get("title"),
-                     "selected": t.get("selected"), "external": t.get("external")}
-                    for t in aids]
-            print(f"[player] audio-add 后音轨列表：{info}")
             if aids:
                 self._pending_audio = None
                 self._audio_attached = True
-                print("[player] 音轨挂载成功")
                 return True
             # 还没有音轨 → 文件可能尚未加载完成，保留待重试
-            print("[player] 音轨尚未出现在列表，稍后重试")
             return False
         except Exception as exc:
             print(f"[player] 读取音轨列表失败：{exc}")
@@ -480,10 +599,15 @@ class BiliResolver:
         if self.cookies_file and os.path.exists(self.cookies_file):
             opts["cookiefile"] = self.cookies_file
         try:
+            import yt_dlp  # 懒加载：yt-dlp 体积较大，首次解析时才导入，加快启动
             with yt_dlp.YoutubeDL(opts) as ydl:
                 return ydl.extract_info(url, download=False)
         except Exception as exc:
-            raise RuntimeError(f"yt-dlp 解析失败：{exc}") from exc
+            # 打印完整堆栈，便于定位「空消息」这类异常的真实原因
+            import traceback
+            traceback.print_exc()
+            err = str(exc).strip() or type(exc).__name__
+            raise RuntimeError(f"yt-dlp 解析失败：{err}") from exc
 
 
 def extract_playable_list(info):
